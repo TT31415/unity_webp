@@ -1,0 +1,23 @@
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[探]Logs/
+/[Mm]emoryCaptures/
+
+# Asset store packages can be resaved and heavy
+/[Aa]ssets/AssetStoreTools*
+
+# Visual Studio / Rider / VS Code の一時ファイル
+.vs/
+.vscode/
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
+
+# OSの生成ファイル
+.DS_Store
+Thumbs.db
