@@ -33,10 +33,12 @@ public class WebPAnimatedFish : MonoBehaviour
     private string fishUrl;
     private const float TRANSFORM_COOLDOWN = 30f;  // 30秒インターバル
     private const int REVERT_DELAY_MS = 20000;      // QR表示20秒
+    private const float MIN_ATTRACTION_TIME = 3f;   // 最低3秒間吸引してからQR判定
 
     private Vector3 targetPosition;
     private List<(Sprite sprite, int time)> frames = new();
     private bool isPlaying = false;
+    private float attractionStartTime = -1f;        // 吸引開始時刻（-1=吸引中でない）
 
     void OnEnable() {
         activeFish.Add(this);
@@ -92,27 +94,40 @@ public class WebPAnimatedFish : MonoBehaviour
                 WebPAnimatedFish closest = GetClosestFish(handsCenter);
 
                 if (closest == this) {
-                    Debug.Log($"[魚] 両手くっつき検出！ 手の距離={handDist:F2}, 最寄り魚=自分, QR状態={isAnyQrActive}, 経過={Time.time - lastGlobalTransformTime:F1}秒");
+                    // 吸引開始時刻を記録
+                    if (attractionStartTime < 0f) {
+                        attractionStartTime = Time.time;
+                        Debug.Log("[魚] 吸引開始！ 3秒間吸引してからQR判定します");
+                    }
 
-                    // QR変身判定（場にQRなし＆30秒インターバル経過）
-                    if (!isAnyQrActive && Time.time - lastGlobalTransformTime > TRANSFORM_COOLDOWN) {
-                        bool rightArm = IsInArmArea2D(sse.rightElbow, sse.rightWrist);
-                        bool leftArm = IsInArmArea2D(sse.leftElbow, sse.leftWrist);
-                        Debug.Log($"[魚] QR条件OK → 腕判定: 右腕={rightArm}, 左腕={leftArm}");
-                        if (rightArm || leftArm) {
-                            ExecuteTransform();
-                            return;
-                        }
-                    } else {
-                        if (isAnyQrActive) {
+                    float attractionDuration = Time.time - attractionStartTime;
+                    Debug.Log($"[魚] 吸引中: {attractionDuration:F1}秒 / 距離={handDist:F2}, QR={isAnyQrActive}");
+
+                    // 吸引実行（一番近い魚だけが吸い寄せられる）
+                    ApplyAttraction2D(handsCenter);
+
+                    // 最低3秒間吸引してからQR変身判定
+                    if (attractionDuration >= MIN_ATTRACTION_TIME) {
+                        if (!isAnyQrActive && Time.time - lastGlobalTransformTime > TRANSFORM_COOLDOWN) {
+                            bool rightArm = IsInArmArea2D(sse.rightElbow, sse.rightWrist);
+                            bool leftArm = IsInArmArea2D(sse.leftElbow, sse.leftWrist);
+                            Debug.Log($"[魚] QR条件OK → 腕判定: 右腕={rightArm}, 左腕={leftArm}");
+                            if (rightArm || leftArm) {
+                                attractionStartTime = -1f;
+                                ExecuteTransform();
+                                return;
+                            }
+                        } else if (isAnyQrActive) {
                             Debug.Log("[魚] QR変身スキップ: 既にQRが場にある");
                         } else {
                             Debug.Log($"[魚] QR変身スキップ: インターバル中（残り{TRANSFORM_COOLDOWN - (Time.time - lastGlobalTransformTime):F1}秒）");
                         }
                     }
-                    // 吸引実行（一番近い魚だけが吸い寄せられる）
-                    ApplyAttraction2D(handsCenter);
+                    return; // 吸引中は通常移動しない
                 }
+            } else {
+                // 両手が離れたら吸引リセット
+                attractionStartTime = -1f;
             }
         }
         MoveFish();
@@ -166,17 +181,40 @@ public class WebPAnimatedFish : MonoBehaviour
     }
 
     async Task TransformToQrCode() {
-        isPlaying = false; 
+        // アニメーションループを停止し、完全に止まるまで待つ
+        isPlaying = false;
+        await Task.Yield(); // PlayLoopが完全に止まるのを待つ
+        await Task.Yield();
+
+        // QR表示中の位置を固定
+        Vector3 qrPosition = transform.position;
+        Debug.Log($"[魚] QR表示位置を固定: {qrPosition}");
+
         string qrApiUrl = $"https://api.qrserver.com/v1/create-qr-code/?size=256x256&data={Uri.EscapeDataString(fishUrl)}";
         Debug.Log($"[魚] QRコード画像取得中: {qrApiUrl}");
         using (var request = UnityWebRequestTexture.GetTexture(qrApiUrl)) {
             var op = request.SendWebRequest();
-            while (!op.isDone) await Task.Yield();
+            while (!op.isDone) {
+                transform.position = qrPosition; // 位置固定
+                await Task.Yield();
+            }
             if (request.result == UnityWebRequest.Result.Success) {
                 Texture2D qrTexture = DownloadHandlerTexture.GetContent(request);
-                spriteRenderer.sprite = Sprite.Create(qrTexture, new Rect(0, 0, qrTexture.width, qrTexture.height), new Vector2(0.5f, 0.5f));
-                Debug.Log($"[魚] QRコード表示中（20秒間）...");
-                await Task.Delay(REVERT_DELAY_MS); // 20秒表示
+                Debug.Log($"[魚] QRテクスチャ取得成功: {qrTexture.width}x{qrTexture.height}");
+                // pixelsPerUnit=50 でQRを大きく表示（256px / 50 = 約5ユニット）
+                spriteRenderer.sprite = Sprite.Create(qrTexture, new Rect(0, 0, qrTexture.width, qrTexture.height), new Vector2(0.5f, 0.5f), 50f);
+                spriteRenderer.color = Color.white;
+                transform.position = qrPosition; // 位置確定
+                Debug.Log($"[魚] ★QRコード画面に表示中（20秒間） 位置={qrPosition}");
+
+                // 20秒間QRを表示し続ける（位置も固定）
+                float qrEndTime = Time.time + REVERT_DELAY_MS / 1000f;
+                while (Time.time < qrEndTime) {
+                    if (this == null) return;
+                    transform.position = qrPosition; // 毎フレーム位置固定
+                    await Task.Yield();
+                }
+
                 if (this != null) {
                     Debug.Log("[魚] QR表示終了 → 魚に戻ります");
                     RevertToFish();
@@ -193,6 +231,10 @@ public class WebPAnimatedFish : MonoBehaviour
         Debug.Log("[魚] 魚に復帰完了。次のQR化可能まで30秒");
         isAnyQrActive = false;
         isStopped = false;
+        // 魚の最初のフレームでスプライトを戻す
+        if (frames.Count > 0) {
+            spriteRenderer.sprite = frames[0].sprite;
+        }
         SetTarget();
         _ = PlayLoop();
     }
